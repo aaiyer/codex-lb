@@ -15,6 +15,7 @@ from app.core.runtime_logging import log_error_response
 _LIMITED_MULTIPART_PATHS = frozenset(
     {
         "/api/accounts/import",
+        "/api/v1/pool-accounts/import",
         "/backend-api/transcribe",
         "/v1/audio/transcriptions",
         "/v1/images/edits",

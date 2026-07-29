@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import json
 import logging
 from datetime import timedelta
@@ -62,6 +64,8 @@ from app.modules.accounts.schemas import (
     CodexAuthTokens,
     OpenCodeAuthJson,
     OpenCodeOAuthAuth,
+    PoolAccountResponse,
+    PoolAccountsResponse,
 )
 from app.modules.limit_warmup.repository import LimitWarmupRepository
 from app.modules.proxy.account_cache import (
@@ -95,6 +99,41 @@ IMPORT_PROXY_REQUIRED_PAUSE_REASON = "upstream_proxy_required_on_import"
 
 class InvalidAuthJsonError(Exception):
     pass
+
+
+class InvalidPoolAccountCursorError(Exception):
+    pass
+
+
+def _pool_account_response(account: Account) -> PoolAccountResponse:
+    return PoolAccountResponse(
+        account_id=account.id,
+        email=account.email,
+        alias=account.alias,
+        status=account.status.value,
+        paused=account.status == AccountStatus.PAUSED,
+        plan_type=account.plan_type,
+        created_at=account.created_at,
+        last_refresh_at=account.last_refresh,
+    )
+
+
+def _encode_pool_account_cursor(account_id: str) -> str:
+    return base64.urlsafe_b64encode(f"v1:{account_id}".encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_pool_account_cursor(cursor: str) -> str:
+    if not cursor or cursor.strip() != cursor:
+        raise InvalidPoolAccountCursorError
+    padded = cursor + "=" * (-len(cursor) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("ascii"))
+        value = decoded.decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError, UnicodeEncodeError, ValueError) as exc:
+        raise InvalidPoolAccountCursorError from exc
+    if not value.startswith("v1:") or len(value) == 3:
+        raise InvalidPoolAccountCursorError
+    return value[3:]
 
 
 class AccountNotProbableError(Exception):
@@ -231,6 +270,33 @@ class AccountsService:
             limit_warmups_by_account=limit_warmups_by_account,
             encryptor=self._encryptor,
         )
+
+    async def list_pool_accounts(
+        self,
+        *,
+        email: str | None = None,
+        status: AccountStatus | None = None,
+        alias: str | None = None,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> PoolAccountsResponse:
+        cursor_id = _decode_pool_account_cursor(cursor) if cursor is not None else None
+        accounts, has_more = await self._repo.list_pool_accounts(
+            email=email,
+            status=status,
+            alias=alias,
+            limit=limit,
+            cursor_id=cursor_id,
+        )
+        next_cursor = _encode_pool_account_cursor(accounts[-1].id) if has_more and accounts else None
+        return PoolAccountsResponse(
+            accounts=[_pool_account_response(account) for account in accounts],
+            next_cursor=next_cursor,
+        )
+
+    async def get_pool_account(self, account_id: str) -> PoolAccountResponse | None:
+        account = await self._repo.get_by_id(account_id)
+        return _pool_account_response(account) if account is not None else None
 
     async def get_account_trends(self, account_id: str) -> AccountTrendsResponse | None:
         account = await self._repo.get_by_id(account_id)

@@ -10,6 +10,7 @@ pytestmark = pytest.mark.unit
 
 _MULTIPART_OPERATIONS = {
     ("/api/accounts/import", "post"),
+    ("/api/v1/pool-accounts/import", "post"),
     ("/backend-api/transcribe", "post"),
     ("/v1/audio/transcriptions", "post"),
     ("/v1/images/edits", "post"),
@@ -71,12 +72,37 @@ def test_all_fastapi_multipart_operations_have_an_explicit_bounded_policy_surfac
     assert actual == _MULTIPART_OPERATIONS
 
 
+def test_pool_account_service_operations_use_their_own_bearer_scheme() -> None:
+    openapi = create_app().openapi()
+    service_paths = (
+        "/api/v1/pool-accounts",
+        "/api/v1/pool-accounts/{account_id}",
+        "/api/v1/pool-accounts/import",
+    )
+    for path in service_paths:
+        operations = openapi["paths"][path].values()
+        for operation in operations:
+            if isinstance(operation, dict):
+                assert operation["security"] == [{"ServiceAdminBearer": []}]
+    assert openapi["components"]["securitySchemes"]["ServiceAdminBearer"] == {
+        "type": "http",
+        "description": "Service admin token",
+        "scheme": "bearer",
+    }
+
+
 def test_multipart_request_body_schemas_remain_semantically_identical() -> None:
     openapi = create_app().openapi()
 
     assert _request_schema(openapi, "/api/accounts/import") == {
         "type": "object",
         "title": "Body_import_account_api_accounts_import_post",
+        "required": ["auth_json"],
+        "properties": {"auth_json": _binary("Auth Json")},
+    }
+    assert _request_schema(openapi, "/api/v1/pool-accounts/import") == {
+        "type": "object",
+        "title": "Body_import_pool_account_api_v1_pool_accounts_import_post",
         "required": ["auth_json"],
         "properties": {"auth_json": _binary("Auth Json")},
     }

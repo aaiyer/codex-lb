@@ -61,6 +61,7 @@ nav:
   - Configuration: configuration.md
   - Authentication: authentication.md
   - API Keys: api-keys.md
+  - Service API: service-api.md
   - Routing: routing.md
   - Database: database.md
   - Deployment:

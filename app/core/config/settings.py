@@ -404,6 +404,10 @@ class Settings(BaseSettings):
     bulkhead_proxy_limit: int = Field(default=512, ge=0)
     bulkhead_dashboard_limit: int = Field(default=50, ge=0)
     dashboard_bootstrap_token: str | None = None
+    # Optional machine-to-machine administration credential. The service API
+    # remains closed when this is unset; configured values are validated below
+    # and are never logged or included in responses.
+    service_admin_token: str | None = None
     proxy_token_refresh_limit: int = Field(default=64, ge=0)
     proxy_upstream_websocket_connect_limit: int = Field(default=128, ge=0)
     proxy_response_create_limit: int = Field(default=256, ge=0)
@@ -542,6 +546,20 @@ class Settings(BaseSettings):
         if not isinstance(value, str):
             raise TypeError("dashboard_auth_proxy_header must be a string")
         return normalize_dashboard_auth_proxy_header(value)
+
+    @field_validator("service_admin_token", mode="before")
+    @classmethod
+    def _validate_service_admin_token(cls, value: object) -> str | None:
+        if value is None:
+            return None
+        if not isinstance(value, str):
+            raise TypeError("service_admin_token must be a string")
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("service_admin_token must not be blank when configured")
+        if len(normalized) < 32:
+            raise ValueError("service_admin_token must be at least 32 characters when configured")
+        return normalized
 
     @field_validator("http_responses_session_bridge_instance_ring", mode="before")
     @classmethod
