@@ -134,6 +134,24 @@ class AccountsResponse(DashboardModel):
     accounts: List[AccountSummary] = Field(default_factory=list)
 
 
+class PoolAccountResponse(DashboardModel):
+    """Credential-free metadata exposed by the machine-to-machine API."""
+
+    account_id: str
+    email: str
+    alias: str | None = None
+    status: str
+    paused: bool = False
+    plan_type: str
+    created_at: datetime
+    last_refresh_at: datetime | None = None
+
+
+class PoolAccountsResponse(DashboardModel):
+    accounts: list[PoolAccountResponse] = Field(default_factory=list)
+    next_cursor: str | None = None
+
+
 class AccountImportResponse(DashboardModel):
     account_id: str
     email: str

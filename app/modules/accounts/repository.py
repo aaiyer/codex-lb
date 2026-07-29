@@ -105,6 +105,32 @@ class AccountsRepository:
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_pool_accounts(
+        self,
+        *,
+        email: str | None,
+        status: AccountStatus | None,
+        alias: str | None,
+        limit: int,
+        cursor_id: str | None = None,
+    ) -> tuple[list[Account], bool]:
+        """Return one bounded, keyset-paginated page for the service API."""
+
+        stmt = select(Account)
+        if email is not None:
+            stmt = stmt.where(Account.email == email)
+        if status is not None:
+            stmt = stmt.where(Account.status == status)
+        if alias is not None:
+            stmt = stmt.where(Account.alias == alias)
+        if cursor_id is not None:
+            stmt = stmt.where(Account.id > cursor_id)
+        stmt = stmt.order_by(Account.id).limit(limit + 1)
+        result = await self._session.execute(stmt)
+        accounts = list(result.scalars().all())
+        has_more = len(accounts) > limit
+        return accounts[:limit], has_more
+
     async def list_request_usage_summary_by_account(
         self,
         account_ids: list[str] | None = None,
