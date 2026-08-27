@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from app.core import routing_pause
 from app.core.audit.service import AuditService
 from app.core.auth.dependencies import set_dashboard_error_format
 from app.core.auth.service_token import validate_service_admin_token
@@ -23,11 +24,18 @@ from app.modules.accounts.schemas import (
     AccountImportResponse,
     PoolAccountResponse,
     PoolAccountsResponse,
+    RoutingPauseStatusResponse,
 )
 from app.modules.accounts.service import InvalidAuthJsonError, InvalidPoolAccountCursorError
 
 router = APIRouter(
     prefix="/api/v1/pool-accounts",
+    tags=["service-api"],
+    dependencies=[Depends(set_dashboard_error_format), Depends(validate_service_admin_token)],
+)
+
+routing_router = APIRouter(
+    prefix="/api/v1/routing",
     tags=["service-api"],
     dependencies=[Depends(set_dashboard_error_format), Depends(validate_service_admin_token)],
 )
@@ -53,6 +61,42 @@ _POOL_ACCOUNT_IMPORT_OPENAPI_EXTRA = {
         },
     }
 }
+
+
+def _routing_status() -> RoutingPauseStatusResponse:
+    return RoutingPauseStatusResponse(
+        paused=routing_pause.is_paused(),
+        waiting_requests=routing_pause.get_waiter_count(),
+    )
+
+
+@routing_router.post("/pause", response_model=RoutingPauseStatusResponse)
+async def pause_routing(request: Request) -> RoutingPauseStatusResponse:
+    routing_pause.pause()
+    response = _routing_status()
+    AuditService.log_async(
+        "routing_paused",
+        actor_ip=request.client.host if request.client else None,
+        details={"waiting_requests": response.waiting_requests},
+    )
+    return response
+
+
+@routing_router.post("/resume", response_model=RoutingPauseStatusResponse)
+async def resume_routing(request: Request) -> RoutingPauseStatusResponse:
+    routing_pause.resume()
+    response = _routing_status()
+    AuditService.log_async(
+        "routing_resumed",
+        actor_ip=request.client.host if request.client else None,
+        details={"waiting_requests": response.waiting_requests},
+    )
+    return response
+
+
+@routing_router.get("/status", response_model=RoutingPauseStatusResponse)
+async def routing_status() -> RoutingPauseStatusResponse:
+    return _routing_status()
 
 
 @router.get("", response_model=PoolAccountsResponse)

@@ -153,6 +153,12 @@ class PoolAccountsResponse(DashboardModel):
     next_cursor: str | None = None
 
 
+class RoutingPauseStatusResponse(DashboardModel):
+    paused: bool
+    waiting_requests: int = Field(ge=0)
+    scope: str = "process"
+
+
 class AccountImportResponse(DashboardModel):
     account_id: str
     email: str

@@ -78,6 +78,9 @@ def test_pool_account_service_operations_use_their_own_bearer_scheme() -> None:
         "/api/v1/pool-accounts",
         "/api/v1/pool-accounts/{account_id}",
         "/api/v1/pool-accounts/import",
+        "/api/v1/routing/pause",
+        "/api/v1/routing/resume",
+        "/api/v1/routing/status",
     )
     for path in service_paths:
         operations = openapi["paths"][path].values()

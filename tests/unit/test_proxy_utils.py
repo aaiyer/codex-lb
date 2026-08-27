@@ -36,6 +36,7 @@ import app.core.clients.proxy as proxy_module
 import app.core.openai.requests as openai_requests_module
 import app.core.resilience.network_recovery as network_recovery_module
 import app.modules.proxy.load_balancer as load_balancer_module
+from app.core import routing_pause
 from app.core import shutdown as shutdown_state
 from app.core.auth.refresh import RefreshError
 from app.core.balancer.types import UpstreamError
@@ -30603,6 +30604,65 @@ async def test_proxy_responses_websocket_rejects_response_create_observed_after_
     assert error_event["type"] == "error"
     assert error_event["error"]["code"] == "service_unavailable"
     assert downstream.close_calls == [(1012, "Server is draining")]
+
+
+@pytest.mark.asyncio
+async def test_proxy_responses_websocket_holds_new_turn_until_routing_resumes(monkeypatch):
+    service = proxy_service.ProxyService(_repo_factory(_RequestLogsRecorder()))
+    settings = _make_proxy_settings()
+    settings.proxy_downstream_websocket_idle_timeout_seconds = 120.0
+    monkeypatch.setattr(proxy_service, "get_settings_cache", lambda: _SettingsCache(settings))
+    monkeypatch.setattr(proxy_service, "get_settings", lambda: settings)
+    prepared = asyncio.Event()
+
+    async def stop_after_prepare(*_args, **_kwargs):
+        prepared.set()
+        raise asyncio.CancelledError
+
+    prepare_request = AsyncMock(side_effect=stop_after_prepare)
+    monkeypatch.setattr(service, "_prepare_websocket_response_create_request", prepare_request)
+
+    request_text = json.dumps(
+        {
+            "type": "response.create",
+            "model": "gpt-5.6-sol",
+            "input": "wait locally",
+            "stream": True,
+        },
+        separators=(",", ":"),
+    )
+    downstream = _ScriptedDownstreamWebSocket(request_text)
+    routing_pause.pause()
+    task = asyncio.create_task(
+        service.proxy_responses_websocket(
+            cast(WebSocket, downstream),
+            {},
+            codex_session_affinity=False,
+            openai_cache_affinity=False,
+            api_key=None,
+        )
+    )
+    try:
+        async with asyncio.timeout(1):
+            while routing_pause.get_waiter_count() != 1:
+                await asyncio.sleep(0)
+
+        prepare_request.assert_not_awaited()
+        assert downstream.sent_text == []
+
+        routing_pause.resume()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        routing_pause.resume()
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    assert prepared.is_set()
+    prepare_request.assert_awaited_once()
+    assert downstream.sent_text == []
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 The service API is a small machine-to-machine control surface for pool
 accounts already managed by codex-lb. It is separate from dashboard sessions
 and client proxy API keys. The governing capability is the
-[pool-account service API OpenSpec](https://github.com/aaiyer/codex-lb/tree/feat/service-account-api/openspec/specs/pool-account-service-api).
+[pool-account service API OpenSpec](https://github.com/aaiyer/codex-lb/tree/main/openspec/specs/pool-account-service-api).
 
 ## Enable authentication
 
@@ -33,6 +33,9 @@ Authorization: Bearer <service-admin-token>
 | `GET` | `/api/v1/pool-accounts/{account_id}` | Inspect one account |
 | `POST` | `/api/v1/pool-accounts/import` | Import one bounded `auth_json` file |
 | `DELETE` | `/api/v1/pool-accounts/{account_id}` | Delete an account |
+| `POST` | `/api/v1/routing/pause` | Hold new local routing work without responding |
+| `POST` | `/api/v1/routing/resume` | Release all local routing waiters |
+| `GET` | `/api/v1/routing/status` | Inspect local pause state and waiter count |
 
 The list endpoint supports exact `email`, `status`, and `alias` filters,
 `limit` from 1 through 200, and an opaque keyset `cursor`. The default limit
@@ -42,6 +45,32 @@ current account model does not persist those timestamps.
 Responses contain account ID, email, alias, status, paused state, plan type,
 creation time, and last refresh time. They never contain access, refresh, ID,
 or service-admin tokens.
+
+## Routing maintenance
+
+Pause routing before replacing pool accounts. New proxy HTTP requests remain
+connected without receiving response headers or an error, and new Responses
+turns on existing WebSockets wait locally. Already-admitted work may finish.
+Resume releases every connected waiter, which then selects from the current
+account pool.
+
+```bash
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer ${SERVICE_ADMIN_TOKEN}" \
+  http://127.0.0.1:2455/api/v1/routing/pause
+
+# Import or delete pool accounts here.
+
+curl --fail-with-body -X POST \
+  -H "Authorization: Bearer ${SERVICE_ADMIN_TOKEN}" \
+  http://127.0.0.1:2455/api/v1/routing/resume
+```
+
+The gate is process-local and starts resumed after a process restart. It covers
+the complete supported single-process SQLite deployment. Optional multi-replica
+PostgreSQL deployments must pause each replica independently. codex-lb sends no
+maintenance response while paused, although a client or reverse proxy may still
+apply its own request timeout.
 
 ## Examples
 
