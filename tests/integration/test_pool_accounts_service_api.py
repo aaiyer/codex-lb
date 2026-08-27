@@ -14,6 +14,7 @@ from app.core.config.settings import get_settings
 from app.db.models import Account, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts import service_api as service_api_module
+from app.modules.accounts.deletion import run_account_deletion_pass
 
 pytestmark = pytest.mark.integration
 
@@ -260,6 +261,12 @@ async def test_service_api_delete_retains_or_explicitly_purges_history(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _configure_service_token(monkeypatch, SERVICE_TOKEN)
+    monkeypatch.setattr("app.modules.accounts.service.request_account_deletion_run", lambda: None)
+
+    async def _no_tick(self) -> None:
+        return None
+
+    monkeypatch.setattr("app.modules.accounts.deletion.AccountDeletionScheduler._run_once", _no_tick)
     audit_events: list[tuple[str, dict[str, object] | None]] = []
 
     def capture_audit(action: str, **kwargs: object) -> None:
@@ -290,12 +297,9 @@ async def test_service_api_delete_retains_or_explicitly_purges_history(
         "pool_account_deleted",
         {"account_id": retained_id, "delete_history": False},
     )
-    async with SessionLocal() as session:
-        retained_log = (
-            await session.execute(select(RequestLog).where(RequestLog.request_id == "synthetic-retained-log"))
-        ).scalar_one()
-        assert retained_log.account_id is None
-        assert retained_log.deleted_at is not None
+    listed = await async_client.get("/api/v1/pool-accounts", headers=_auth_headers())
+    assert all(account["accountId"] != retained_id for account in listed.json()["accounts"])
+    assert (await async_client.get(f"/api/v1/pool-accounts/{retained_id}", headers=_auth_headers())).status_code == 404
 
     repeated = await async_client.delete(
         f"/api/v1/pool-accounts/{retained_id}",
@@ -303,6 +307,16 @@ async def test_service_api_delete_retains_or_explicitly_purges_history(
     )
     assert repeated.status_code == 404
     assert repeated.json()["error"]["code"] == "pool_account_not_found"
+    assert len(audit_events) == 2
+
+    outcomes = await run_account_deletion_pass()
+    assert outcomes[retained_id] == "finalized"
+    async with SessionLocal() as session:
+        retained_log = (
+            await session.execute(select(RequestLog).where(RequestLog.request_id == "synthetic-retained-log"))
+        ).scalar_one()
+        assert retained_log.account_id is None
+        assert retained_log.deleted_at is not None
 
     purged = await _import(async_client, "purge-history", "purge-history@example.com")
     purged_id = purged.json()["accountId"]
@@ -326,6 +340,8 @@ async def test_service_api_delete_retains_or_explicitly_purges_history(
         "pool_account_deleted",
         {"account_id": purged_id, "delete_history": True},
     )
+    outcomes = await run_account_deletion_pass()
+    assert outcomes[purged_id] == "finalized"
     async with SessionLocal() as session:
         assert (
             await session.execute(select(RequestLog).where(RequestLog.request_id == "synthetic-purged-log"))

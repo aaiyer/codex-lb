@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 import pytest
 from sqlalchemy import text
 
+import app.modules.settings.api as settings_api_module
 from app.core.auth import generate_unique_account_id
 from app.core.config.settings_cache import get_settings_cache
 from app.db.models import Account, AccountStatus, DashboardSettings
@@ -52,8 +53,17 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["upstreamStreamTransport"] == "default"
     assert payload["prohibitFastMode"] is False
     assert payload["proxyAccountResponseCreateLimit"] == 4
+    assert payload["proxyAccountResponseCreateLimitEnvironmentValue"] == 4
+    assert payload["proxyAccountResponseCreateLimitOverride"] == 4
     assert payload["proxyAccountStreamLimit"] == 8
+    assert payload["proxyAccountStreamLimitEnvironmentValue"] == 8
+    assert payload["proxyAccountStreamLimitOverride"] == 8
     assert payload["proxyAccountStreamRecoveryReserve"] == 1
+    assert payload["proxyAccountStreamRecoveryReserveEnvironmentValue"] == 1
+    assert payload["proxyAccountStreamRecoveryReserveOverride"] == 1
+    assert payload["proxyApiKeyFairShareCongestionThresholdPct"] == 0
+    assert payload["proxyApiKeyFairShareCongestionThresholdPctEnvironmentValue"] == 0
+    assert payload["proxyApiKeyFairShareCongestionThresholdPctOverride"] == 0
     assert payload["upstreamProxyRoutingEnabled"] is False
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is True
@@ -99,6 +109,7 @@ async def test_settings_api_get_and_update(async_client):
             "proxyAccountResponseCreateLimit": 12,
             "proxyAccountStreamLimit": 24,
             "proxyAccountStreamRecoveryReserve": 3,
+            "proxyApiKeyFairShareCongestionThresholdPct": 80,
             "upstreamProxyRoutingEnabled": True,
             "upstreamProxyDefaultPoolId": None,
             "preferEarlierResetAccounts": False,
@@ -141,8 +152,13 @@ async def test_settings_api_get_and_update(async_client):
     assert updated["upstreamStreamTransport"] == "websocket"
     assert updated["prohibitFastMode"] is True
     assert updated["proxyAccountResponseCreateLimit"] == 12
+    assert updated["proxyAccountResponseCreateLimitOverride"] == 12
     assert updated["proxyAccountStreamLimit"] == 24
+    assert updated["proxyAccountStreamLimitOverride"] == 24
     assert updated["proxyAccountStreamRecoveryReserve"] == 3
+    assert updated["proxyAccountStreamRecoveryReserveOverride"] == 3
+    assert updated["proxyApiKeyFairShareCongestionThresholdPct"] == 80
+    assert updated["proxyApiKeyFairShareCongestionThresholdPctOverride"] == 80
     assert updated["upstreamProxyRoutingEnabled"] is True
     assert updated["upstreamProxyDefaultPoolId"] is None
     assert updated["preferEarlierResetAccounts"] is False
@@ -186,8 +202,13 @@ async def test_settings_api_get_and_update(async_client):
     assert payload["upstreamStreamTransport"] == "websocket"
     assert payload["prohibitFastMode"] is True
     assert payload["proxyAccountResponseCreateLimit"] == 12
+    assert payload["proxyAccountResponseCreateLimitOverride"] == 12
     assert payload["proxyAccountStreamLimit"] == 24
+    assert payload["proxyAccountStreamLimitOverride"] == 24
     assert payload["proxyAccountStreamRecoveryReserve"] == 3
+    assert payload["proxyAccountStreamRecoveryReserveOverride"] == 3
+    assert payload["proxyApiKeyFairShareCongestionThresholdPct"] == 80
+    assert payload["proxyApiKeyFairShareCongestionThresholdPctOverride"] == 80
     assert payload["upstreamProxyRoutingEnabled"] is True
     assert payload["upstreamProxyDefaultPoolId"] is None
     assert payload["preferEarlierResetAccounts"] is False
@@ -225,6 +246,57 @@ async def test_settings_api_get_and_update(async_client):
 
 
 @pytest.mark.asyncio
+async def test_settings_api_capacity_overrides_support_absent_null_and_explicit_values(async_client):
+    configured = await async_client.put(
+        "/api/settings",
+        json={
+            "proxyAccountResponseCreateLimit": 12,
+            "proxyAccountStreamLimit": 24,
+            "proxyAccountStreamRecoveryReserve": 3,
+            "proxyApiKeyFairShareCongestionThresholdPct": 80,
+        },
+    )
+    assert configured.status_code == 200
+
+    unchanged = await async_client.put("/api/settings", json={"warmupModel": "gpt-5.6-sol"})
+    assert unchanged.status_code == 200
+    unchanged_payload = unchanged.json()
+    assert unchanged_payload["proxyAccountResponseCreateLimitOverride"] == 12
+    assert unchanged_payload["proxyAccountStreamLimitOverride"] == 24
+    assert unchanged_payload["proxyAccountStreamRecoveryReserveOverride"] == 3
+    assert unchanged_payload["proxyApiKeyFairShareCongestionThresholdPctOverride"] == 80
+
+    cleared = await async_client.put(
+        "/api/settings",
+        json={
+            "proxyAccountResponseCreateLimit": None,
+            "proxyAccountStreamLimit": None,
+            "proxyAccountStreamRecoveryReserve": None,
+            "proxyApiKeyFairShareCongestionThresholdPct": None,
+        },
+    )
+    assert cleared.status_code == 200
+    cleared_payload = cleared.json()
+    assert cleared_payload["proxyAccountResponseCreateLimit"] == 4
+    assert cleared_payload["proxyAccountResponseCreateLimitOverride"] is None
+    assert cleared_payload["proxyAccountStreamLimit"] == 8
+    assert cleared_payload["proxyAccountStreamLimitOverride"] is None
+    assert cleared_payload["proxyAccountStreamRecoveryReserve"] == 1
+    assert cleared_payload["proxyAccountStreamRecoveryReserveOverride"] is None
+    assert cleared_payload["proxyApiKeyFairShareCongestionThresholdPct"] == 0
+    assert cleared_payload["proxyApiKeyFairShareCongestionThresholdPctOverride"] is None
+
+    pinned_to_effective = await async_client.put(
+        "/api/settings",
+        json={"proxyAccountStreamLimit": 8},
+    )
+    assert pinned_to_effective.status_code == 200
+    pinned_payload = pinned_to_effective.json()
+    assert pinned_payload["proxyAccountStreamLimit"] == 8
+    assert pinned_payload["proxyAccountStreamLimitOverride"] == 8
+
+
+@pytest.mark.asyncio
 async def test_unrelated_settings_update_preserves_inherited_account_cap_nulls(async_client, monkeypatch):
     response = await async_client.get("/api/settings")
     assert response.status_code == 200
@@ -235,6 +307,7 @@ async def test_unrelated_settings_update_preserves_inherited_account_cap_nulls(a
         settings.proxy_account_response_create_limit = None
         settings.proxy_account_stream_limit = None
         settings.proxy_account_stream_recovery_reserve = None
+        settings.proxy_api_key_fair_share_congestion_threshold_pct = None
         await session.commit()
     await get_settings_cache().invalidate()
 
@@ -258,6 +331,7 @@ async def test_unrelated_settings_update_preserves_inherited_account_cap_nulls(a
         assert settings.proxy_account_response_create_limit is None
         assert settings.proxy_account_stream_limit is None
         assert settings.proxy_account_stream_recovery_reserve is None
+        assert settings.proxy_api_key_fair_share_congestion_threshold_pct is None
 
 
 @pytest.mark.asyncio
@@ -302,6 +376,37 @@ async def test_settings_api_rejects_stream_recovery_reserve_above_bounded_stream
     assert unlimited.status_code == 200
     assert unlimited.json()["proxyAccountStreamLimit"] == 0
     assert unlimited.json()["proxyAccountStreamRecoveryReserve"] == 3
+
+
+@pytest.mark.asyncio
+async def test_settings_api_rejects_clear_that_would_violate_environment_capacity(
+    async_client,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    async with SessionLocal() as session:
+        settings = await session.get(DashboardSettings, 1)
+        assert settings is not None
+        settings.proxy_account_stream_limit = 24
+        settings.proxy_account_stream_recovery_reserve = 3
+        await session.commit()
+    await get_settings_cache().invalidate()
+
+    startup_settings = settings_api_module.get_app_settings()
+    monkeypatch.setattr(
+        settings_api_module,
+        "get_app_settings",
+        lambda: startup_settings.model_copy(update={"proxy_account_stream_limit": 2}),
+    )
+
+    response = await async_client.put("/api/settings", json={"proxyAccountStreamLimit": None})
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_proxy_account_stream_recovery_reserve"
+
+    async with SessionLocal() as session:
+        settings = await session.get(DashboardSettings, 1)
+        assert settings is not None
+        assert settings.proxy_account_stream_limit == 24
+        assert settings.proxy_account_stream_recovery_reserve == 3
 
 
 @pytest.mark.asyncio
@@ -444,6 +549,23 @@ async def test_settings_full_put_rejects_out_of_range_sticky_threshold(async_cli
     response = await async_client.put("/api/settings", json=payload)
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_settings_api_rejects_out_of_range_api_key_fair_share_threshold(async_client):
+    response = await async_client.put(
+        "/api/settings",
+        json={"proxyApiKeyFairShareCongestionThresholdPct": 101},
+    )
+
+    assert response.status_code == 422
+
+    negative = await async_client.put(
+        "/api/settings",
+        json={"proxyApiKeyFairShareCongestionThresholdPct": -1},
+    )
+
+    assert negative.status_code == 422
 
 
 @pytest.mark.asyncio
@@ -1207,3 +1329,46 @@ async def test_retention_override_tri_state_echo_capture_and_clear(async_client,
         settings = await session.get(DashboardSettings, 1)
         assert settings is not None
         assert settings.request_log_retention_days is None
+
+
+@pytest.mark.asyncio
+async def test_auto_redeem_opt_in_rejected_while_reset_credit_polling_disabled(async_client, monkeypatch):
+    from types import SimpleNamespace
+
+    disabled = SimpleNamespace(rate_limit_reset_credits_refresh_enabled=False)
+    monkeypatch.setattr("app.modules.settings.api.get_app_settings", lambda: disabled)
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["autoRedeemResetCreditsBeforeExpiry"] is False
+    payload["autoRedeemResetCreditsBeforeExpiry"] = True
+
+    response = await async_client.put("/api/settings", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "reset_credit_polling_disabled"
+
+
+@pytest.mark.asyncio
+async def test_full_put_with_persisted_auto_redeem_allowed_while_polling_disabled(async_client, monkeypatch):
+    from types import SimpleNamespace
+
+    async with SessionLocal() as session:
+        await session.execute(
+            text("UPDATE dashboard_settings SET auto_redeem_reset_credits_before_expiry = 1 WHERE id = 1")
+        )
+        await session.commit()
+
+    disabled = SimpleNamespace(rate_limit_reset_credits_refresh_enabled=False)
+    monkeypatch.setattr("app.modules.settings.api.get_app_settings", lambda: disabled)
+
+    response = await async_client.get("/api/settings")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["autoRedeemResetCreditsBeforeExpiry"] is True
+
+    response = await async_client.put("/api/settings", json=payload)
+
+    assert response.status_code == 200
+    assert response.json()["autoRedeemResetCreditsBeforeExpiry"] is True

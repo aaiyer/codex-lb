@@ -143,6 +143,8 @@ async def delete_pool_account(
     delete_history: bool = Query(default=False),
     context: AccountsContext = Depends(get_accounts_context),
 ) -> AccountDeleteResponse:
+    if await context.service.get_pool_account(account_id) is None:
+        raise DashboardNotFoundError("Pool account not found", code="pool_account_not_found")
     success = await context.service.delete_account(account_id, delete_history=delete_history)
     if not success:
         raise DashboardNotFoundError("Pool account not found", code="pool_account_not_found")

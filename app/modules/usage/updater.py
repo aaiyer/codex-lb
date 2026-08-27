@@ -8,7 +8,7 @@ import time
 from collections.abc import Awaitable, Callable, Collection, Hashable
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Mapping, Protocol, cast
+from typing import Final, Mapping, Protocol, cast
 
 from app.core import usage as usage_core
 from app.core.auth.refresh import RefreshError
@@ -26,17 +26,22 @@ from app.core.plan_types import ACCOUNT_PLAN_TYPES, coerce_account_plan_type, no
 from app.core.upstream_proxy import ResolvedUpstreamRoute, UpstreamProxyRouteError, resolve_upstream_route
 from app.core.usage.models import AdditionalRateLimitPayload, UsagePayload, UsageWindow
 from app.core.utils.request_id import get_request_id
+from app.core.utils.shared_future import wait_on_shared_future
 from app.core.utils.time import utcnow
 from app.db.models import Account, AccountStatus, UsageHistory
 from app.db.session import get_background_session
 from app.modules.accounts.auth_manager import AccountsRepositoryPort, AuthManager
 from app.modules.accounts.background_repository import BackgroundAccountsRepository
-from app.modules.accounts.repository import AccountsRepository as SessionAccountsRepository
 from app.modules.proxy.account_cache import get_account_selection_cache, mark_account_routing_unavailable
 from app.modules.usage.additional_quota_keys import canonicalize_additional_quota_key
 from app.modules.usage.background_repository import BackgroundAdditionalUsageRepository, BackgroundUsageRepository
+from app.modules.usage.plan_downgrade_observations import (
+    InMemoryPlanDowngradeObservationStore,
+    PlanDowngradeObservationStorePort,
+    credential_fingerprint,
+    get_plan_downgrade_observation_store,
+)
 from app.modules.usage.repository import AdditionalUsageRepository, UsageWindowWrite
-from app.modules.usage.repository import UsageRepository as SessionUsageRepository
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +152,22 @@ class _MergedAdditionalWindow:
 _last_successful_refresh: dict[str, datetime] = {}
 _usage_refresh_auth_cooldowns: dict[str, float] = {}
 
+# Fallback for consecutive workspace-less "free" observations (issue #1456) used
+# only when persistence is explicitly disabled -- the DB-less unit-test harness.
+# The process default is the database-backed
+# :class:`PlanDowngradeObservationStore`, so the observation sequence stays
+# coherent across replicas sharing one database; this fallback preserves
+# single-process behavior instead of dropping the guard when no database is
+# available.
+_FALLBACK_PLAN_DOWNGRADE_OBSERVATIONS = InMemoryPlanDowngradeObservationStore()
+
+# Number of consecutive agreeing observations required before a workspace-less
+# paid -> free downgrade is persisted. Deliberately a constant rather than a
+# CODEX_LB_* setting: two observations is the minimum that distinguishes a real
+# expiry from a single degraded response, and operators gain nothing from tuning
+# it (PRINCIPLES.md P2, settings-surface ratchet in issue #1340).
+_FREE_PLAN_DOWNGRADE_CONFIRMATIONS: Final[int] = 2
+
 
 class _UsageRefreshSingleflight:
     def __init__(self) -> None:
@@ -177,14 +198,14 @@ class _UsageRefreshSingleflight:
             if wait_for_existing is None:
                 break
             try:
-                await asyncio.shield(wait_for_existing)
+                await wait_on_shared_future(wait_for_existing)
             except asyncio.CancelledError:
                 current_task = asyncio.current_task()
                 if current_task is not None and current_task.cancelling():
                     raise
             except Exception:
                 pass
-        return await asyncio.shield(task)
+        return await wait_on_shared_future(task)
 
     async def _run_factory(
         self,
@@ -254,11 +275,23 @@ class UsageUpdater:
         latest_usage: Mapping[str, UsageHistory],
         *,
         own_singleflight_sessions: bool = False,
+        join_existing: bool | None = None,
     ) -> bool:
-        """Refresh usage for all accounts. Returns True if usage rows were written."""
+        """Refresh usage for all accounts. Returns True if usage rows were written.
+
+        ``own_singleflight_sessions`` makes each detached singleflight refresh
+        acquire and release its own DB session instead of using this updater's
+        caller-bound repositories. ``join_existing`` controls whether a caller
+        joins an in-flight refresh for the same key (deduplication) or waits
+        and forces a fresh one; it defaults to the historical coupling
+        ``not own_singleflight_sessions`` so existing callers keep their
+        semantics.
+        """
         settings = get_settings()
         if not settings.usage_refresh_enabled:
             return False
+        if join_existing is None:
+            join_existing = not own_singleflight_sessions
 
         refreshed = False
         now = utcnow()
@@ -327,9 +360,9 @@ class UsageUpdater:
                         own_singleflight_session=own_singleflight_sessions,
                     ),
                     refresh_factory,
-                    join_existing=not own_singleflight_sessions,
+                    join_existing=join_existing,
                 )
-                if not own_singleflight_sessions:
+                if join_existing:
                     await self._sync_account_from_repo(account)
                 refreshed = refreshed or result.usage_written
                 # Only cache when the upstream fetch actually succeeded.
@@ -496,28 +529,26 @@ class UsageUpdater:
     ) -> AccountRefreshResult:
         @contextlib.asynccontextmanager
         async def refresh_repo_factory():
-            async with get_background_session() as refresh_session:
-                yield SessionAccountsRepository(refresh_session)
+            yield BackgroundAccountsRepository()
 
-        async with get_background_session() as session:
-            accounts_repo = SessionAccountsRepository(session)
-            usage_repo = SessionUsageRepository(session)
-            additional_usage_repo = AdditionalUsageRepository(session)
-            account = await accounts_repo.get_by_id(account_id)
-            if account is None:
-                return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
-            if account.status in (AccountStatus.PAUSED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
-                return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
-            return await UsageUpdater(
-                usage_repo,
-                accounts_repo,
-                additional_usage_repo,
-                auth_manager=AuthManager(accounts_repo, refresh_repo_factory=refresh_repo_factory),
-            )._refresh_account_if_stale(
-                account,
-                usage_account_id=account.chatgpt_account_id,
-                interval_seconds=interval_seconds,
-            )
+        accounts_repo = BackgroundAccountsRepository()
+        usage_repo = BackgroundUsageRepository()
+        additional_usage_repo = BackgroundAdditionalUsageRepository()
+        account = await accounts_repo.get_by_id(account_id)
+        if account is None:
+            return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
+        if account.status in (AccountStatus.PAUSED, AccountStatus.REAUTH_REQUIRED, AccountStatus.DEACTIVATED):
+            return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
+        return await UsageUpdater(
+            usage_repo,
+            accounts_repo,
+            additional_usage_repo,
+            auth_manager=AuthManager(accounts_repo, refresh_repo_factory=refresh_repo_factory),
+        )._refresh_account_if_stale(
+            account,
+            usage_account_id=account.chatgpt_account_id,
+            interval_seconds=interval_seconds,
+        )
 
     async def _refresh_account(
         self,
@@ -586,7 +617,7 @@ class UsageUpdater:
         if payload is None:
             return AccountRefreshResult(usage_written=False, fetch_succeeded=False)
 
-        if _payload_mismatches_account_slot(account, payload):
+        if await _payload_mismatches_account_slot(account, payload):
             logger.warning(
                 "Usage refresh payload identity mismatch; skipping account mutation "
                 "account_id=%s stored_workspace_id=%s payload_workspace_id=%s stored_plan_type=%s "
@@ -889,7 +920,9 @@ class UsageUpdater:
     async def _sync_account_from_repo(self, account: Account) -> None:
         if not self._accounts_repo:
             return
-        stored = await self._accounts_repo.get_by_id(account.id)
+        # Joined owned-session refreshes run in a different session.  A plain
+        # get_by_id() can return the caller session's stale identity-map row.
+        stored = await self._accounts_repo.get_by_id_fresh(account.id)
         if stored is None:
             return
         account.chatgpt_account_id = stored.chatgpt_account_id
@@ -928,11 +961,13 @@ def _credits_snapshot(payload: UsagePayload) -> tuple[bool | None, bool | None, 
     return credits_has, credits_unlimited, _parse_credits_balance(balance_value)
 
 
-def _payload_mismatches_account_slot(account: Account, payload: UsagePayload) -> bool:
+async def _payload_mismatches_account_slot(account: Account, payload: UsagePayload) -> bool:
     payload_workspace_id = _clean_optional(payload.workspace_id)
     if account.workspace_id and payload_workspace_id and account.workspace_id != payload_workspace_id:
         # The payload reports a different workspace slot than the one this
         # account is bound to; refuse to write another workspace's usage/plan.
+        # This guard is unconditional: repetition never makes a conflicting
+        # workspace identity trustworthy.
         return True
     if not payload_workspace_id and payload.plan_type:
         payload_plan_type = coerce_account_plan_type(payload.plan_type, account.plan_type or "free")
@@ -956,8 +991,107 @@ def _payload_mismatches_account_slot(account: Account, payload: UsagePayload) ->
                 and payload_plan_type in recognized_paid_plans
             )
         ):
+            # A subscription that expires reports "free" every cycle from that
+            # account's own token, so an agreeing repeat observation is no
+            # longer the single-sample degraded signature above. Persist the
+            # downgrade only once it has been confirmed (issue #1456).
+            if await _free_plan_downgrade_is_confirmed(
+                account,
+                stored_plan_type=stored_plan_type,
+                normalized_payload_plan_type=normalized_payload_plan_type,
+            ):
+                return False
             return True
+        if normalize_account_plan_type(payload.plan_type) in (ACCOUNT_PLAN_TYPES - {"free"}):
+            # The account reports a recognized paid plan, which is positive
+            # evidence that it is still paid, so any pending downgrade evidence
+            # is discarded. An unrecognized value is absence of evidence and
+            # deliberately does not reach here.
+            await _clear_workspace_less_free_plan_observations(account.id)
     return False
+
+
+async def _free_plan_downgrade_is_confirmed(
+    account: Account,
+    *,
+    stored_plan_type: str,
+    normalized_payload_plan_type: str | None,
+) -> bool:
+    """Record a workspace-less paid -> free observation and report confirmation.
+
+    Only a recognized ``free`` payload against a recognized paid stored plan on a
+    workspace-less account is confirmable. Unrecognized plan values never
+    accumulate, so a degraded response reporting garbage can never downgrade an
+    account no matter how often it repeats.
+    """
+    if normalized_payload_plan_type != "free":
+        return False
+    if stored_plan_type not in (ACCOUNT_PLAN_TYPES - {"free"}):
+        return False
+    if account.workspace_id:
+        # The account is bound to a workspace, so a payload that omits
+        # ``workspace_id`` cannot establish that it describes this slot. A
+        # workspace-bound seat (Team/Business/Enterprise) must not be demoted to
+        # free on the strength of a payload that never names its workspace,
+        # however many times it repeats.
+        return False
+    fingerprint = credential_fingerprint(account)
+    store = _plan_downgrade_observation_store()
+    # One atomic step records the observation and returns the resulting count.
+    # The fingerprint digests the account's stable seat identity, not token
+    # material, so routine token rotation between two observations does not
+    # restart the sequence and a real expiry still converges (#1456). Credential
+    # replacement (re-import or in-place reauthentication) resets pending
+    # evidence at the replacement site itself -- the accounts repository
+    # discards it in the same transaction that applies the fresh material --
+    # while the fingerprint comparison here restarts the count for any
+    # remaining path that rebinds the row's seat identity. Doing this as a read
+    # followed by a write would leave an await between the two halves, letting
+    # concurrent refreshes for one account lose an increment.
+    observations = await store.observe(
+        account.id,
+        credential_fingerprint=fingerprint,
+        observed_plan_type="free",
+    )
+    if observations < _FREE_PLAN_DOWNGRADE_CONFIRMATIONS:
+        logger.info(
+            "Usage refresh observed a workspace-less downgrade to free; awaiting confirmation "
+            "account_id=%s stored_plan_type=%s observations=%s required=%s request_id=%s",
+            account.id,
+            stored_plan_type,
+            observations,
+            _FREE_PLAN_DOWNGRADE_CONFIRMATIONS,
+            get_request_id(),
+        )
+        return False
+    await store.clear(account.id)
+    logger.info(
+        "Usage refresh confirmed a workspace-less downgrade to free; persisting plan change "
+        "account_id=%s stored_plan_type=%s observations=%s request_id=%s",
+        account.id,
+        stored_plan_type,
+        observations,
+        get_request_id(),
+    )
+    return True
+
+
+def _plan_downgrade_observation_store() -> PlanDowngradeObservationStorePort:
+    """Resolve the shared store, falling back to process-local state.
+
+    The database-backed store is the process default so the observation sequence
+    is coherent across replicas. When persistence is explicitly disabled (the
+    DB-less unit-test harness), the fallback preserves the previous
+    single-process behavior rather than losing the guard entirely.
+    """
+    store = get_plan_downgrade_observation_store()
+    if store is not None:
+        return store
+    return _FALLBACK_PLAN_DOWNGRADE_OBSERVATIONS
+
+
+async def _clear_workspace_less_free_plan_observations(account_id: str) -> None:
+    await _plan_downgrade_observation_store().clear(account_id)
 
 
 def _clean_optional(value: str | None) -> str | None:
@@ -1278,4 +1412,5 @@ def _prune_usage_refresh_auth_cooldowns() -> None:
 def _clear_usage_refresh_state() -> None:
     _usage_refresh_auth_cooldowns.clear()
     _last_successful_refresh.clear()
+    _FALLBACK_PLAN_DOWNGRADE_OBSERVATIONS.clear_all()
     _USAGE_REFRESH_SINGLEFLIGHT.clear()
