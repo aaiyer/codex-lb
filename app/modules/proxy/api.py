@@ -9233,7 +9233,7 @@ def _http_bridge_recovery_request_eligible(
     if not bridge_active or (payload.previous_response_id is None and turn_state_anchor is None):
         return False
     settings = proxy_service_module.get_settings()
-    if not getattr(settings, "http_responses_session_bridge_operation_ledger_enabled", True):
+    if not getattr(settings, "http_responses_session_bridge_operation_ledger_enabled", False):
         return False
     # Turn-state-only requests are admitted to the recovery-capable stream so
     # the submit path can first prove a durable predecessor by advancing its

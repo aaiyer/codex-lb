@@ -3701,7 +3701,7 @@ class _HTTPBridgeStreamingMixin:
                     "fail_closed",
                 )
                 in {"server_anchored_replay_once", "server_indefinite_recovery"}
-                and getattr(_service_get_settings(), "http_responses_session_bridge_operation_ledger_enabled", True)
+                and getattr(_service_get_settings(), "http_responses_session_bridge_operation_ledger_enabled", False)
                 and request_state.hard_continuity_anchor
                 and session.durable_session_id is not None
                 and session.durable_owner_epoch is not None

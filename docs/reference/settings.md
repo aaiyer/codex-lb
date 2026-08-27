@@ -7,7 +7,7 @@ Regenerate with `uv run python scripts/generate_settings_reference.py`;
 `tests/unit/test_settings_reference.py` fails when this page drifts from
 `app/core/config/settings.py`.
 
-codex-lb currently exposes 132 settings. Every setting is an environment
+codex-lb currently exposes 133 settings. Every setting is an environment
 variable with the `CODEX_LB_` prefix (process environment or `.env` /
 `.env.local` next to the process). All defaults work with zero configuration —
 start from [Configuration](../configuration.md) for the handful that matter,
@@ -98,7 +98,7 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_BYTES` | `int` | `2097152` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_PENDING_BYTES` | `int` | `33554432` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_EVENT_SPOOL_MAX_PENDING_EVENTS` | `int` | `2048` |
-| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_LEDGER_ENABLED` | `bool` | `True` |
+| `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_LEDGER_ENABLED` | `bool` | `False` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_OPERATION_SPOOL_RETENTION_SECONDS` | `float` | `604800` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_QUEUE_LIMIT` | `int` | `8` |
 | `CODEX_LB_HTTP_RESPONSES_SESSION_BRIDGE_REQUEST_BUDGET_SECONDS` | `float` | `7200.0` |
@@ -150,10 +150,10 @@ the host side of the compose `ports` mapping instead.
 | `CODEX_LB_LIVE_USAGE_INGESTION_ENABLED` | `bool` | `True` |
 | `CODEX_LB_RATE_LIMIT_RESET_CREDITS_REFRESH_ENABLED` | `bool` | `True` |
 | `CODEX_LB_RATE_LIMIT_RESET_CREDITS_REFRESH_INTERVAL_SECONDS` | `int` | `60` |
-| `CODEX_LB_REQUEST_LOG_RETENTION_DAYS` | `int` | `0` |
+| `CODEX_LB_REQUEST_LOG_RETENTION_DAYS` | `int` | `30` |
 | `CODEX_LB_USAGE_FETCH_MAX_RETRIES` | `int` | `2` |
 | `CODEX_LB_USAGE_FETCH_TIMEOUT_SECONDS` | `float` | `10.0` |
-| `CODEX_LB_USAGE_HISTORY_RETENTION_DAYS` | `int` | `0` |
+| `CODEX_LB_USAGE_HISTORY_RETENTION_DAYS` | `int` | `45` |
 | `CODEX_LB_USAGE_REFRESH_AUTH_FAILURE_COOLDOWN_SECONDS` | `float` | `300.0` |
 | `CODEX_LB_USAGE_REFRESH_ENABLED` | `bool` | `True` |
 | `CODEX_LB_USAGE_REFRESH_INTERVAL_SECONDS` | `int` | `60` |
@@ -251,6 +251,7 @@ the host side of the compose `ports` mapping instead.
 
 | Environment variable | Type | Default |
 | --- | --- | --- |
+| `CODEX_LB_CONVERSATION_ANALYTICS_ENABLED` | `bool` | `False` |
 | `CODEX_LB_EVENT_LOOP_LAG_WARN_THRESHOLD_SECONDS` | `float` | `0.5` |
 | `CODEX_LB_SERVICE_ADMIN_TOKEN` | `str \| None` | `None` |
 | `CODEX_LB_TELEMETRY_ENABLED` | `bool \| None` | `None` |

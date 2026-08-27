@@ -72,7 +72,10 @@ ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
 # 131 -> 132: service_admin_token. The service API requires one explicit,
 # independently injectable secret setting; this is the simplicity-budget
 # exception for codex-uber Plan 001.
-MAX_SETTINGS_FIELDS = 132
+# 132 -> 133: conversation_analytics_enabled. Conversation identifiers are a
+# privacy-sensitive history feature, so operators need an explicit opt-in;
+# neither transcript archiving nor retention expresses that choice.
+MAX_SETTINGS_FIELDS = 133
 
 
 def test_generated_settings_reference_matches_code() -> None:

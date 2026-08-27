@@ -1167,9 +1167,9 @@ async def test_settings_api_retention_override_update_persists_and_round_trips(a
     response = await async_client.get("/api/settings")
     assert response.status_code == 200
     body = response.json()
-    # Fresh row has NULL overrides and the test env sets no alias: effective 0.
-    assert body["requestLogRetentionDays"] == 0
-    assert body["usageHistoryRetentionDays"] == 0
+    # Fresh row has NULL overrides and inherits the safe code defaults.
+    assert body["requestLogRetentionDays"] == 30
+    assert body["usageHistoryRetentionDays"] == 45
     assert body["requestLogRetentionOverrideDays"] is None
     assert body["usageHistoryRetentionOverrideDays"] is None
 

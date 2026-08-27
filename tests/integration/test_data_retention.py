@@ -61,6 +61,8 @@ def _set_retention(monkeypatch, *, request_logs: int = 0, usage_history: int = 0
 
 
 def test_retention_settings_validation():
+    assert Settings().request_log_retention_days == 30
+    assert Settings().usage_history_retention_days == 45
     assert Settings(request_log_retention_days=0).request_log_retention_days == 0
     assert Settings(request_log_retention_days=30).request_log_retention_days == 30
     assert Settings(usage_history_retention_days=45).usage_history_retention_days == 45
@@ -71,7 +73,8 @@ def test_retention_settings_validation():
 
 
 @pytest.mark.asyncio
-async def test_retention_disabled_by_default_deletes_nothing(db_setup):
+async def test_retention_explicitly_disabled_deletes_nothing(db_setup, monkeypatch):
+    _set_retention(monkeypatch)
     now = utcnow()
     async with SessionLocal() as session:
         accounts_repo = AccountsRepository(session)

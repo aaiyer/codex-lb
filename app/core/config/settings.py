@@ -310,10 +310,9 @@ class Settings(BaseSettings):
         le=30.0,
     )
     http_responses_session_bridge_gateway_safe_mode: bool = False
-    # Attach the durable operation identity to response.create client metadata.
-    # The upstream must explicitly support/deduplicate this value before any
-    # automatic replay is enabled; metadata-only propagation is safe by default.
-    http_responses_session_bridge_operation_ledger_enabled: bool = True
+    # Opt in to durable response.create operation identity and transcript
+    # recovery; normal bridge continuity does not need the extra writes.
+    http_responses_session_bridge_operation_ledger_enabled: bool = False
     # Bound durable replay storage per operation so a long response cannot
     # exhaust the database. An incomplete spool is never replayed.
     http_responses_session_bridge_operation_event_spool_max_bytes: int = Field(default=2 * 1024 * 1024, gt=0)
@@ -358,8 +357,8 @@ class Settings(BaseSettings):
     # `usage_history_retention_days`); a non-NULL dashboard value wins. These
     # env fields remain one release as aliases for unset dashboard values and
     # will be removed in a later phase.
-    request_log_retention_days: int = Field(default=0, ge=0, le=3650)
-    usage_history_retention_days: int = Field(default=0, ge=0, le=3650)
+    request_log_retention_days: int = Field(default=30, ge=0, le=3650)
+    usage_history_retention_days: int = Field(default=45, ge=0, le=3650)
     quota_planner_scheduler_enabled: bool = True
     automations_scheduler_enabled: bool = True
     telemetry_enabled: bool | None = None
@@ -378,6 +377,8 @@ class Settings(BaseSettings):
     # (upstream request summary/completion), ``upstream_payload`` (upstream
     # request payload). Interactive incident use only, not steady-state config.
     trace: str = ""
+    # Opt in to storing client conversation identifiers in request logs.
+    conversation_analytics_enabled: bool = False
     conversation_archive_enabled: bool = False
     conversation_archive_dir: Path = DEFAULT_CONVERSATION_ARCHIVE_DIR
     conversation_archive_queue_max_bytes: int = Field(default=256 * 1024 * 1024, gt=0)
