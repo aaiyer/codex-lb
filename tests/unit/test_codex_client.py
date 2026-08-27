@@ -9,7 +9,7 @@ import pytest
 from aiohttp.client_reqrep import ConnectionKey
 from python_socks import ProxyType
 
-from app.core.clients.codex import CodexClient, require_route_or_direct_egress_opt_in
+from app.core.clients.codex import CodexClient, CodexTransportError, require_route_or_direct_egress_opt_in
 from app.core.upstream_proxy import ResolvedProxyEndpoint, ResolvedUpstreamRoute
 from tests.unit._proxy_test_helpers import runtime_basic_auth_url
 
@@ -214,6 +214,94 @@ async def test_non_idempotent_request_failure_does_not_fallback(route: ResolvedU
     assert session.calls[0]["proxy"] == runtime_basic_auth_url("u", "p", "proxy.test:8080")
 
 
+def _proxy_connect_error() -> aiohttp.ClientProxyConnectionError:
+    key = ConnectionKey("proxy.test", 8080, False, False, None, None, None)
+    return aiohttp.ClientProxyConnectionError(key, OSError("proxy credentials must stay private"))
+
+
+class _ProxyConnectFailureSession(_Session):
+    def __init__(self, *, fail_all: bool = False) -> None:
+        super().__init__()
+        self.fail_all_proxy_connects = fail_all
+
+    async def request(self, method: str, url: str, **kwargs: Any) -> _Response:
+        self.calls.append({"method": method, "url": url, **kwargs})
+        if self.fail_all_proxy_connects or len(self.calls) == 1:
+            raise _proxy_connect_error()
+        return _Response(headers={"content-type": "application/json"})
+
+
+@pytest.mark.asyncio
+async def test_non_idempotent_pre_dispatch_proxy_failure_uses_same_pool_fallback(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    session = _ProxyConnectFailureSession()
+    client = CodexClient(session)
+
+    result = await client.request_with_route_metadata(
+        "POST",
+        "https://upstream.test",
+        route=route,
+        buffer_response=False,
+        json={"x": 1},
+    )
+
+    assert result.fallback_used is True
+    assert result.route.endpoint_id == "ep_2"
+    assert [call["proxy"] for call in session.calls] == [
+        runtime_basic_auth_url("u", "p", "proxy.test:8080"),
+        "http://proxy-two.test:8081",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_exhausted_proxy_connect_failures_preserve_pre_dispatch_provenance(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    client = CodexClient(_ProxyConnectFailureSession(fail_all=True))
+
+    with pytest.raises(CodexTransportError) as exc_info:
+        await client.request_with_route_metadata(
+            "POST",
+            "https://upstream.test",
+            route=route,
+            buffer_response=False,
+            json={"x": 1},
+        )
+
+    assert exc_info.value.retryable_same_contract is True
+    assert exc_info.value.failure_phase == "connect"
+    assert "ClientProxyConnectionError" in str(exc_info.value)
+    assert "credentials must stay private" not in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_non_idempotent_tls_verification_connect_failure_does_not_fallback(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    connection_key = ConnectionKey("proxy.test", 8080, True, True, None, None, None)
+
+    class _TLSFailSession(_Session):
+        async def request(self, method: str, url: str, **kwargs: Any) -> _Response:
+            self.calls.append({"method": method, "url": url, **kwargs})
+            raise aiohttp.ClientConnectorCertificateError(connection_key, ValueError("certificate verify failed"))
+
+    session = _TLSFailSession()
+    client = CodexClient(session)
+
+    with pytest.raises(CodexTransportError) as exc_info:
+        await client.request_with_route_metadata(
+            "POST",
+            "https://upstream.test",
+            route=route,
+            buffer_response=False,
+            json={"x": 1},
+        )
+
+    assert len(session.calls) == 1
+    assert exc_info.value.is_tls_verification_failure is True
+
+
 @pytest.mark.asyncio
 async def test_transport_errors_do_not_expose_proxy_credentials(route: ResolvedUpstreamRoute) -> None:
     client = CodexClient(_Session(fail_all=True))
@@ -288,27 +376,87 @@ async def test_websocket_network_error_can_disable_route_fallback(
 
 @pytest.mark.asyncio
 async def test_websocket_network_error_uses_route_fallback_by_default(
+    monkeypatch: pytest.MonkeyPatch,
     route: ResolvedUpstreamRoute,
 ) -> None:
-    class _FailFirstNetworkSession:
-        def __init__(self) -> None:
-            self.calls: list[dict[str, Any]] = []
+    connection_key = ConnectionKey("proxy.test", 8080, False, False, None, None, None)
+    session = aiohttp.ClientSession()
+    calls: list[dict[str, Any]] = []
 
-        def ws_connect(self, url: str, **kwargs: Any) -> object:
-            self.calls.append({"url": url, **kwargs})
-            if len(self.calls) == 1:
-                raise OSError("network unavailable")
-            return object()
+    async def fake_ws_connect(url: str, **kwargs: Any) -> object:
+        calls.append({"url": url, **kwargs})
+        if len(calls) == 1:
+            raise aiohttp.ClientProxyConnectionError(connection_key, ConnectionRefusedError("connection refused"))
+        return object()
 
-    session = _FailFirstNetworkSession()
-    result = await CodexClient(session).open_ws_with_route_metadata(
-        "wss://upstream.test",
-        route=route,
-    )
+    monkeypatch.setattr(session, "_ws_connect", fake_ws_connect)
+    client = CodexClient(session)
+    try:
+        result = await client.open_ws_with_route_metadata(
+            "wss://upstream.test",
+            route=route,
+        )
+    finally:
+        await client.close()
 
-    assert len(session.calls) == 2
+    assert len(calls) == 2
     assert result.fallback_used is True
     assert result.route.endpoint_id == "ep_2"
+
+
+@pytest.mark.asyncio
+async def test_websocket_awaitable_connect_failure_preserves_original_transport_error(
+    monkeypatch: pytest.MonkeyPatch,
+    route: ResolvedUpstreamRoute,
+) -> None:
+    connection_key = ConnectionKey("proxy.test", 8080, False, False, None, None, None)
+    session = aiohttp.ClientSession()
+    calls: list[dict[str, Any]] = []
+
+    async def fail_ws_connect(url: str, **kwargs: Any) -> object:
+        calls.append({"url": url, **kwargs})
+        raise aiohttp.ClientProxyConnectionError(connection_key, ConnectionRefusedError("connection refused"))
+
+    monkeypatch.setattr(session, "_ws_connect", fail_ws_connect)
+    client = CodexClient(session)
+    try:
+        with pytest.raises(CodexTransportError) as exc_info:
+            await client.open_ws_with_route_metadata(
+                "wss://upstream.test",
+                route=route,
+                retry_network_errors=False,
+            )
+    finally:
+        await client.close()
+
+    assert str(exc_info.value) == (
+        "Codex upstream websocket failed via proxy endpoint ep_1: ClientProxyConnectionError"
+    )
+    assert exc_info.value.failure_phase == "connect"
+    assert exc_info.value.retryable_same_contract is False
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_websocket_success_returns_caller_owned_entered_context(
+    route: ResolvedUpstreamRoute,
+) -> None:
+    class _WsContextSession:
+        def __init__(self) -> None:
+            self.context = _WsContext()
+
+        def ws_connect(self, *_args: object, **_kwargs: object) -> _WsContext:
+            return self.context
+
+    session = _WsContextSession()
+    result = await CodexClient(session).open_ws_with_route_metadata("wss://upstream.test", route=route)
+
+    assert result.websocket is session.context.websocket
+    assert result.context is session.context
+
+    await result.context.__aexit__(None, None, None)
+
+    assert session.context.exited is True
 
 
 @pytest.mark.asyncio

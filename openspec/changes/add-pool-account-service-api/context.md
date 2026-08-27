@@ -28,7 +28,9 @@ other.
   `createdAt` and `lastRefreshAt` metadata instead.
 - A normal delete retains request-log rows as historical records with their
   account reference detached. `delete_history=true` is the explicit,
-  destructive opt-in for purging those rows.
+  destructive opt-in for purging those rows. The account becomes unavailable
+  immediately after the delete request; the existing account-deletion worker
+  performs the history cleanup and final row removal in the background.
 
 ## Sensitive-data rules
 

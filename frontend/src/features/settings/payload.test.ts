@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { buildSettingsUpdateRequest } from "@/features/settings/payload";
 import { DashboardSettingsSchema } from "@/features/settings/schemas";
+import { createDashboardSettings } from "@/test/mocks/factories";
 
 describe("buildSettingsUpdateRequest", () => {
   it("carries the loaded settings version as expectedVersion for CAS", () => {
@@ -227,6 +228,7 @@ describe("buildSettingsUpdateRequest", () => {
       proxyAccountResponseCreateLimit: 0,
       proxyAccountStreamLimit: 12,
       proxyAccountStreamRecoveryReserve: 2,
+      proxyApiKeyFairShareCongestionThresholdPct: 80,
       importWithoutOverwrite: true,
       totpRequiredOnLogin: true,
       totpConfigured: false,
@@ -239,6 +241,7 @@ describe("buildSettingsUpdateRequest", () => {
     expect(payload.proxyAccountResponseCreateLimit).toBeUndefined();
     expect(payload.proxyAccountStreamLimit).toBeUndefined();
     expect(payload.proxyAccountStreamRecoveryReserve).toBeUndefined();
+    expect(payload.proxyApiKeyFairShareCongestionThresholdPct).toBeUndefined();
   });
 
   it("includes all account capacity limits when they are explicitly edited", () => {
@@ -259,12 +262,26 @@ describe("buildSettingsUpdateRequest", () => {
       proxyAccountResponseCreateLimit: 0,
       proxyAccountStreamLimit: 12,
       proxyAccountStreamRecoveryReserve: 2,
+      proxyApiKeyFairShareCongestionThresholdPct: 80,
     });
 
     expect(payload).toMatchObject({
       proxyAccountResponseCreateLimit: 0,
       proxyAccountStreamLimit: 12,
       proxyAccountStreamRecoveryReserve: 2,
+      proxyApiKeyFairShareCongestionThresholdPct: 80,
     });
+  });
+
+  it("preserves explicit null capacity clears in the update payload", () => {
+    const settings = createDashboardSettings();
+    const payload = buildSettingsUpdateRequest(settings, {
+      proxyAccountStreamLimit: null,
+    });
+
+    expect(payload.proxyAccountStreamLimit).toBeNull();
+    expect(payload).not.toHaveProperty("proxyAccountResponseCreateLimit");
+    expect(payload).not.toHaveProperty("proxyAccountStreamRecoveryReserve");
+    expect(payload).not.toHaveProperty("proxyApiKeyFairShareCongestionThresholdPct");
   });
 });

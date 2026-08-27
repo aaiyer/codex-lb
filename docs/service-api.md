@@ -79,9 +79,11 @@ uv run fastapi run app/main.py --reload --no-proxy-headers
 The supported container also listens on port 2455. Pass the token through the
 container runtime's secret mechanism and mount the persistent data directory;
 see [Docker deployment](deployment/docker.md). Back up the database and
-encryption key together before account mutations. A normal delete retains
-historical request-log data in detached form. Add `?delete_history=true` only
-when the permanent history purge has been explicitly approved.
+encryption key together before account mutations. A successful delete hides
+the account immediately, then the account-deletion worker finalizes it in the
+background. A normal delete retains historical request-log data in detached
+form. Add `?delete_history=true` only when the permanent history purge has
+been explicitly approved.
 
 ## Errors
 
@@ -101,4 +103,4 @@ workspace-member automation are not supported.
 
 ---
 
-*Spec: [pool-account-service-api](https://github.com/aaiyer/codex-lb/tree/feat/service-account-api/openspec/specs/pool-account-service-api)*
+*Spec: [pool-account-service-api](https://github.com/aaiyer/codex-lb/tree/main/openspec/specs/pool-account-service-api)*
