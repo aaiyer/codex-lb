@@ -1070,7 +1070,7 @@ class _HTTPBridgeRequestSubmitMixin:
         # payload-too-large rejection cannot leave a submitted retry fence.
         text_data = self._http_bridge_text_with_account_installation_id(session, request_state, text_data)
         operation_ledger_enabled = bool(
-            getattr(_service_get_settings(), "http_responses_session_bridge_operation_ledger_enabled", True)
+            getattr(_service_get_settings(), "http_responses_session_bridge_operation_ledger_enabled", False)
         )
         operation_ledger_for_hard_continuity = _http_bridge_operation_fence_for_hard_continuity_enabled(request_state)
         record_operation = getattr(self._durable_bridge, "record_operation", None)

@@ -44,6 +44,7 @@ from app.modules.api_keys.service import (
     ApiKeyUsageReservationData,
     LimitRuleInput,
 )
+from app.modules.proxy._service import support as proxy_support
 from app.modules.proxy._service.websocket import mixin as websocket_mixin_module
 from app.modules.proxy.affinity import _codex_session_selection_key
 from app.modules.proxy.capability_routing import (
@@ -2451,6 +2452,7 @@ def test_backend_responses_websocket_proxies_and_persists_conversation_id(
     output_event_fields: dict[str, object],
     followup_events: list[tuple[str, dict[str, object]]],
 ):
+    monkeypatch.setattr(proxy_support, "get_settings", lambda: SimpleNamespace(conversation_analytics_enabled=True))
     upstream_messages = [
         _FakeUpstreamMessage(
             "text",

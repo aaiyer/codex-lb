@@ -122,6 +122,12 @@ def _share_proxy_dashboard_caps_with_load_balancer(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(load_balancer_module, "get_settings_cache", lambda: _SettingsCache())
 
 
+@pytest.fixture(autouse=True)
+def _enable_conversation_analytics_for_existing_proxy_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = proxy_support.get_settings().model_copy(update={"conversation_analytics_enabled": True})
+    monkeypatch.setattr(proxy_support, "get_settings", lambda: settings)
+
+
 class _ScriptedDownstreamWebSocket:
     def __init__(self, *request_texts: str) -> None:
         self._messages: deque[dict[str, object]] = deque(
@@ -1876,6 +1882,20 @@ def test_request_log_useragent_fields_handle_missing_and_blank_headers(
 )
 def test_request_log_client_fields_detect_conversation(headers, expected):
     assert proxy_service._request_log_client_fields(headers)[2] == expected
+
+
+def test_request_log_client_fields_omit_conversation_by_default(monkeypatch):
+    monkeypatch.setattr(
+        proxy_support,
+        "get_settings",
+        lambda: SimpleNamespace(conversation_analytics_enabled=False),
+    )
+
+    assert proxy_service._request_log_client_fields({"User-Agent": "codex/1.2", "thread-id": "conv-a"}) == (
+        "codex/1.2",
+        "codex",
+        None,
+    )
 
 
 @pytest.mark.asyncio

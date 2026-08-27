@@ -275,7 +275,8 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
     assert "pool_recycle" not in kwargs
 
 
-def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatch) -> None:
+def test_sqlite_file_engine_kwargs_use_bounded_pool(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
     monkeypatch.setattr(
         session_module,
         "_settings",
@@ -288,11 +289,39 @@ def test_sqlite_file_engine_kwargs_use_nullpool_without_pool_controls(monkeypatc
 
     kwargs = session_module._sqlite_file_async_engine_kwargs()
 
+    assert kwargs["pool_size"] == 4
+    assert kwargs["max_overflow"] == 0
+    assert kwargs["connect_args"] == {"timeout": 30.0}
+    assert "poolclass" not in kwargs
+
+
+def test_sqlite_file_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "sqlite+aiosqlite:///test.db")
+
+    kwargs = session_module._sqlite_file_async_engine_kwargs()
+
     assert kwargs["poolclass"] is NullPool
     assert kwargs["connect_args"] == {"timeout": 30.0}
     assert "pool_size" not in kwargs
-    assert "max_overflow" not in kwargs
-    assert "pool_timeout" not in kwargs
+
+
+def test_sqlite_engine_sets_wal_on_first_connect(monkeypatch) -> None:
+    listeners: list[tuple[str, str]] = []
+
+    def listens_for(_target: object, identifier: str):
+        def register(listener):
+            listeners.append((identifier, listener.__name__))
+            return listener
+
+        return register
+
+    monkeypatch.setattr(session_module.event, "listens_for", listens_for)
+    monkeypatch.setattr(session_module, "_install_sqlite_long_write_watchdog", lambda _engine: None)
+
+    session_module._configure_sqlite_engine(cast(Any, object()), enable_wal=True)
+
+    assert ("first_connect", "_set_sqlite_wal") in listeners
+    assert ("connect", "_set_sqlite_pragmas") in listeners
 
 
 def test_postgres_engine_kwargs_keep_pool_controls(monkeypatch) -> None:
@@ -765,13 +794,12 @@ async def test_init_db_fails_when_startup_migrations_are_disabled_but_schema_is_
 
 
 @pytest.mark.asyncio
-async def test_init_background_db_creates_separate_engine() -> None:
-    session_module.init_background_db("sqlite+aiosqlite:///:memory:")
+async def test_init_background_db_shares_sqlite_main_engine() -> None:
+    session_module.init_background_db(session_module._database_url)
 
-    assert session_module._background_engine is not None
-    assert session_module._background_session_factory is not None
+    assert session_module._background_engine is session_module.engine
+    assert session_module._background_session_factory is session_module.SessionLocal
 
-    await session_module._background_engine.dispose()
     session_module._background_engine = None
     session_module._background_session_factory = None
 

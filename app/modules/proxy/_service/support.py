@@ -599,6 +599,8 @@ def _request_log_client_fields(
     headers: Mapping[str, str],
 ) -> tuple[str | None, str | None, str | None]:
     useragent, useragent_group = _request_log_useragent_fields(headers)
+    if not getattr(get_settings(), "conversation_analytics_enabled", False):
+        return useragent, useragent_group, None
     normalized_useragent = (useragent or "").strip().casefold()
     normalized_headers = {key.casefold(): value for key, value in headers.items()}
     for prefix, header_names in _CONVERSATION_HEADERS_BY_USERAGENT_PREFIX:
