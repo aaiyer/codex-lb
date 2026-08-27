@@ -163,6 +163,11 @@ def _create_postgres_async_engine(url: str, *, role: _PostgresPooledEngineRole) 
 
 
 def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
+    if os.getenv("CODEX_LB_TEST_DATABASE_URL"):
+        return {
+            "poolclass": NullPool,
+            "connect_args": {"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS},
+        }
     return {
         "pool_size": _SQLITE_POOL_SIZE,
         "max_overflow": _SQLITE_MAX_OVERFLOW,

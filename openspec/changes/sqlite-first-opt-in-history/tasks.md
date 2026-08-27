@@ -15,3 +15,4 @@
 - [x] 3.1 Update focused regression tests
 - [x] 3.2 Regenerate the settings reference
 - [x] 3.3 Validate OpenSpec and run repository checks
+- [x] 3.4 Preserve the cross-event-loop test database escape hatch and verify CI feature tests opt in explicitly

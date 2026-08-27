@@ -276,6 +276,7 @@ def test_postgres_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> N
 
 
 def test_sqlite_file_engine_kwargs_use_bounded_pool(monkeypatch) -> None:
+    monkeypatch.delenv("CODEX_LB_TEST_DATABASE_URL", raising=False)
     monkeypatch.setattr(
         session_module,
         "_settings",
@@ -292,6 +293,16 @@ def test_sqlite_file_engine_kwargs_use_bounded_pool(monkeypatch) -> None:
     assert kwargs["max_overflow"] == 0
     assert kwargs["connect_args"] == {"timeout": 30.0}
     assert "poolclass" not in kwargs
+
+
+def test_sqlite_file_engine_kwargs_use_nullpool_under_test_db_url(monkeypatch) -> None:
+    monkeypatch.setenv("CODEX_LB_TEST_DATABASE_URL", "sqlite+aiosqlite:///test.db")
+
+    kwargs = session_module._sqlite_file_async_engine_kwargs()
+
+    assert kwargs["poolclass"] is NullPool
+    assert kwargs["connect_args"] == {"timeout": 30.0}
+    assert "pool_size" not in kwargs
 
 
 def test_sqlite_engine_sets_wal_on_first_connect(monkeypatch) -> None:

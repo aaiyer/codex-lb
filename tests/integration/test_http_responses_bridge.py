@@ -200,6 +200,7 @@ def _make_app_settings(
 ) -> Settings:
     return Settings(
         http_responses_session_bridge_enabled=enabled,
+        http_responses_session_bridge_operation_ledger_enabled=True,
         http_responses_session_bridge_idle_ttl_seconds=120.0,
         http_responses_session_bridge_codex_idle_ttl_seconds=codex_idle_ttl_seconds,
         http_responses_session_bridge_codex_prewarm_enabled=codex_prewarm_enabled,

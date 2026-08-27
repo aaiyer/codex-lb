@@ -6,6 +6,8 @@ The production file-backed SQLite request and background session factories MUST 
 
 The engine MUST execute `PRAGMA journal_mode=WAL` only for its first connection. Every connection MUST retain `synchronous=NORMAL`, foreign-key enforcement, and the existing busy timeout. PostgreSQL engine creation and its configurable pool controls MUST remain unchanged.
 
+The existing `CODEX_LB_TEST_DATABASE_URL` test escape hatch MUST use `NullPool` so one imported async engine can safely cross the test harness's event-loop boundaries. This exception MUST NOT affect the production database path.
+
 #### Scenario: File SQLite uses one bounded pool
 
 - **GIVEN** `database_url` resolves to a file-backed SQLite database
@@ -25,6 +27,13 @@ The engine MUST execute `PRAGMA journal_mode=WAL` only for its first connection.
 - **GIVEN** `database_url` resolves to PostgreSQL
 - **WHEN** the application creates its main or background async engine
 - **THEN** PostgreSQL pool sizing, overflow, pre-ping, and recycle controls remain configured as before
+
+#### Scenario: Test database avoids cross-loop pooling
+
+- **GIVEN** `CODEX_LB_TEST_DATABASE_URL` is set to a file-backed SQLite database
+- **WHEN** the test harness creates its async engine
+- **THEN** that engine uses `NullPool`
+- **AND** the production bounded-pool behavior remains unchanged
 
 ## RENAMED Requirements
 
