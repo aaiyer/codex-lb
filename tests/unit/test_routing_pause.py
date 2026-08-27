@@ -65,6 +65,32 @@ async def test_non_proxy_routes_remain_available_while_paused() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_admitted_before_pause_finishes_normally() -> None:
+    app = FastAPI()
+    app.add_middleware(cast(Any, RoutingPauseMiddleware))
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    @app.get("/v1/work")
+    async def work() -> dict[str, bool]:
+        entered.set()
+        await release.wait()
+        return {"ok": True}
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        request = asyncio.create_task(client.get("/v1/work"))
+        await asyncio.wait_for(entered.wait(), timeout=1)
+
+        routing_pause.pause()
+        release.set()
+        response = await asyncio.wait_for(request, timeout=1)
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+@pytest.mark.asyncio
 async def test_cancelled_waiter_is_removed() -> None:
     routing_pause.pause()
     waiter = asyncio.create_task(routing_pause.wait_until_resumed())
