@@ -36,6 +36,8 @@ logger = logging.getLogger(__name__)
 
 _SQLITE_BUSY_TIMEOUT_MS = 30_000
 _SQLITE_BUSY_TIMEOUT_SECONDS = _SQLITE_BUSY_TIMEOUT_MS / 1000
+_SQLITE_POOL_SIZE = 4
+_SQLITE_MAX_OVERFLOW = 0
 # A write transaction holding SQLite's single writer slot past the busy
 # timeout is exactly the holder that makes every other writer surface
 # "database is locked" (issue #1682); the watchdog below reports it with the
@@ -162,18 +164,23 @@ def _create_postgres_async_engine(url: str, *, role: _PostgresPooledEngineRole) 
 
 def _sqlite_file_async_engine_kwargs() -> dict[str, object]:
     return {
-        "poolclass": NullPool,
+        "pool_size": _SQLITE_POOL_SIZE,
+        "max_overflow": _SQLITE_MAX_OVERFLOW,
         "connect_args": {"timeout": _SQLITE_BUSY_TIMEOUT_SECONDS},
     }
 
 
 def _configure_sqlite_engine(engine: Engine, *, enable_wal: bool) -> None:
+    if enable_wal:
+
+        @event.listens_for(engine, "first_connect")
+        def _set_sqlite_wal(dbapi_connection: sqlite3.Connection, _: object) -> None:
+            dbapi_connection.execute("PRAGMA journal_mode=WAL")
+
     @event.listens_for(engine, "connect")
     def _set_sqlite_pragmas(dbapi_connection: sqlite3.Connection, _: object) -> None:
         cursor: sqlite3.Cursor = dbapi_connection.cursor()
         try:
-            if enable_wal:
-                cursor.execute("PRAGMA journal_mode=WAL")
             cursor.execute("PRAGMA synchronous=NORMAL")
             cursor.execute("PRAGMA foreign_keys=ON")
             cursor.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")
@@ -726,10 +733,10 @@ def _load_sqlite_backup_creator() -> _SqliteBackupCreator:
 
 
 def init_background_db(url: str | None = None) -> None:
-    """Initialize a separate DB engine for background tasks.
+    """Initialize the DB session factory for background tasks.
 
-    The background engine isolates background-task checkouts from the request
-    pool; its pool sizing always derives from ``database_pool_size`` /
+    SQLite shares the bounded main engine. PostgreSQL keeps a separate pool
+    whose sizing derives from ``database_pool_size`` /
     ``database_max_overflow``.
 
     Args:
@@ -740,10 +747,9 @@ def init_background_db(url: str | None = None) -> None:
 
     if _is_sqlite_url(db_url):
         is_sqlite_memory = _is_sqlite_memory_url(db_url)
-        if is_sqlite_memory:
-            # Reuse the main engine for in-memory SQLite — creating a second
-            # engine would open a separate, empty in-memory database with no
-            # schema, causing "no such table" errors in background tasks.
+        if is_sqlite_memory or db_url == _database_url:
+            # Production SQLite shares one bounded pool. In-memory SQLite must
+            # also share the engine so background tasks see the same schema.
             _background_engine = engine
             _background_session_factory = SessionLocal
             return
@@ -977,5 +983,5 @@ async def close_db() -> None:
             # the registry reflects them before the next stability check.
             await asyncio.sleep(0)
     await engine.dispose()
-    if _background_engine is not None:
+    if _background_engine is not None and _background_engine is not engine:
         await _background_engine.dispose()
