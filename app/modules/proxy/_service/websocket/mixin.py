@@ -16,6 +16,7 @@ import anyio
 from fastapi import WebSocket
 from pydantic import ValidationError
 
+from app.core import routing_pause
 from app.core import shutdown as shutdown_state
 from app.core.auth.refresh import (
     RefreshError,
@@ -1666,6 +1667,7 @@ class _WebSocketMixin:
                                 )
                             continue
                         if _is_websocket_response_create(payload):
+                            await routing_pause.wait_until_resumed()
                             if shutdown_state.is_draining():
                                 async with client_send_lock:
                                     await websocket.send_text(

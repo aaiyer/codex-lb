@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -8,10 +9,12 @@ from typing import cast
 import pytest
 from sqlalchemy import select, update
 
+from app.core import routing_pause
+from app.core.audit.service import drain_audit_log_tasks
 from app.core.auth import generate_unique_account_id
 from app.core.auth import service_token as service_token_module
 from app.core.config.settings import get_settings
-from app.db.models import Account, RequestLog
+from app.db.models import Account, AuditLog, RequestLog
 from app.db.session import SessionLocal
 from app.modules.accounts import service_api as service_api_module
 from app.modules.accounts.deletion import run_account_deletion_pass
@@ -95,6 +98,69 @@ async def test_service_api_auth_is_separate_and_fail_closed(async_client, monkey
     assert valid.status_code == 200
     assert SERVICE_TOKEN not in caplog.text
     assert "wrong-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_service_api_pauses_and_resumes_process_routing(async_client, monkeypatch) -> None:
+    _configure_service_token(monkeypatch, SERVICE_TOKEN)
+
+    missing = await async_client.post("/api/v1/routing/pause")
+    assert missing.status_code == 401
+    assert routing_pause.is_paused() is False
+
+    paused = await async_client.post("/api/v1/routing/pause", headers=_auth_headers())
+    paused_again = await async_client.post("/api/v1/routing/pause", headers=_auth_headers())
+    status = await async_client.get("/api/v1/routing/status", headers=_auth_headers())
+
+    expected_paused = {"paused": True, "waitingRequests": 0, "scope": "process"}
+    assert paused.status_code == paused_again.status_code == status.status_code == 200
+    assert paused.json() == paused_again.json() == status.json() == expected_paused
+
+    resumed = await async_client.post("/api/v1/routing/resume", headers=_auth_headers())
+    resumed_again = await async_client.post("/api/v1/routing/resume", headers=_auth_headers())
+    expected_resumed = {"paused": False, "waitingRequests": 0, "scope": "process"}
+    assert resumed.json() == resumed_again.json() == expected_resumed
+
+    assert await drain_audit_log_tasks(timeout_seconds=1)
+    async with SessionLocal() as session:
+        rows = (
+            await session.execute(select(AuditLog).where(AuditLog.action.in_(("routing_paused", "routing_resumed"))))
+        ).scalars()
+        audit_rows = list(rows)
+    assert [row.action for row in audit_rows].count("routing_paused") == 2
+    assert [row.action for row in audit_rows].count("routing_resumed") == 2
+    assert all(json.loads(row.details or "{}") == {"waiting_requests": 0} for row in audit_rows)
+    assert all(SERVICE_TOKEN not in (row.details or "") for row in audit_rows)
+
+
+@pytest.mark.asyncio
+async def test_paused_proxy_request_stays_pending_until_service_resume(async_client, monkeypatch) -> None:
+    _configure_service_token(monkeypatch, SERVICE_TOKEN)
+    pause = await async_client.post("/api/v1/routing/pause", headers=_auth_headers())
+    assert pause.status_code == 200
+
+    proxy_request = asyncio.create_task(async_client.get("/v1/models"))
+    try:
+        async with asyncio.timeout(1):
+            while True:
+                status = await async_client.get("/api/v1/routing/status", headers=_auth_headers())
+                if status.json()["waitingRequests"] == 1:
+                    break
+                await asyncio.sleep(0)
+
+        assert not proxy_request.done()
+
+        resume = await async_client.post("/api/v1/routing/resume", headers=_auth_headers())
+        assert resume.status_code == 200
+        response = await asyncio.wait_for(proxy_request, timeout=2)
+    finally:
+        routing_pause.resume()
+        if not proxy_request.done():
+            proxy_request.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await proxy_request
+
+    assert response.status_code == 200
 
 
 @pytest.mark.asyncio

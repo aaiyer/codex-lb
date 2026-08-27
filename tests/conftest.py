@@ -405,6 +405,16 @@ def _reset_shutdown_task_admission():
     shutdown_state.reset()
 
 
+@pytest.fixture(autouse=True)
+def _reset_routing_pause():
+    """Keep the process-local maintenance gate test-local."""
+    from app.core import routing_pause
+
+    routing_pause.reset()
+    yield
+    routing_pause.reset()
+
+
 _SESSION_LOOP: asyncio.AbstractEventLoop | None = None
 
 # Both task names the live-usage ingestor owns (consumer and throttled

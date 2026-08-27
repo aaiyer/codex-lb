@@ -51,6 +51,7 @@ from app.core.middleware import (
 )
 from app.core.middleware.dashboard_gzip import add_dashboard_gzip_middleware
 from app.core.middleware.inflight import InFlightMiddleware
+from app.core.middleware.routing_pause import RoutingPauseMiddleware
 from app.core.openai.model_refresh_scheduler import build_model_refresh_scheduler
 from app.core.resilience.backpressure import BackpressureMiddleware
 from app.core.resilience.bulkhead import BulkheadMiddleware, get_bulkhead
@@ -815,6 +816,7 @@ def create_app() -> FastAPI:
             dashboard_limit=settings.bulkhead_dashboard_limit,
         ),
     )
+    app.add_middleware(cast(Any, RoutingPauseMiddleware))
     add_backend_api_codex_v1_alias_middleware(app)
     add_app_version_middleware(app)
     add_exception_handlers(app)
@@ -833,6 +835,7 @@ def create_app() -> FastAPI:
     app.include_router(audit_api.router)
     app.include_router(accounts_api.router)
     app.include_router(accounts_service_api.router)
+    app.include_router(accounts_service_api.routing_router)
     app.include_router(rate_limit_reset_credits_api.router)
     app.include_router(dashboard_api.router)
     app.include_router(usage_api.router)
